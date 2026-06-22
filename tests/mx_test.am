@@ -1,0 +1,33 @@
+// MX lookup test (needs network/DNS). Resolves a known domain's MX and
+// checks a bogus domain returns empty.
+namespace Tests
+import Amalgame.Collections
+import Amalgame.Crypto
+import Amalgame.Tls
+import Amalgame.Mail.Dkim
+import Amalgame.Mail.Send
+
+public class Program {
+    public static void Main(string[] args) {
+        let mxs: List<string> = Mx.Lookup("gmail.com")
+        let n: int = mxs.Count()
+        var found: bool = false
+        for i in 0..n {
+            let h: string = mxs.Get(i)
+            if (String_Contains(h, "google.com")) { found = true }
+        }
+        if (n > 0 && found) { Console.WriteLine("[PASS] mx lookup gmail") }
+        else { Console.WriteLine("[FAIL] mx lookup gmail: n=" + String_FromInt(n)) }
+
+        // first MX is the lowest-preference (gmail-smtp-in, not altN)
+        if (n > 0) {
+            let first: string = mxs.Get(0)
+            if (String_Contains(first, "gmail-smtp-in")) { Console.WriteLine("[PASS] mx sorted by pref") }
+            else { Console.WriteLine("[FAIL] mx sorted: " + first) }
+        } else { Console.WriteLine("[FAIL] mx sorted: no results") }
+
+        let none: List<string> = Mx.Lookup("nonexistent.invalid")
+        if (none.Count() == 0) { Console.WriteLine("[PASS] mx empty for bogus") }
+        else { Console.WriteLine("[FAIL] mx empty for bogus: " + String_FromInt(none.Count())) }
+    }
+}

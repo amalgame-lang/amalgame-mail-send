@@ -10,6 +10,51 @@ import Amalgame.Mail.Dkim
     #include <string.h>
     #include <sys/socket.h>
     #include <unistd.h>
+    #include <netinet/in.h>
+    #include <resolv.h>
+    #include <arpa/nameser.h>
+}
+
+// MX resolution (via the system resolver). Returns the recipient
+// domain's mail exchangers, lowest-preference first. Empty if the domain
+// has no MX (caller should fall back to the domain's A record — the
+// implicit MX of RFC 5321 §5.1). Requires linking -lresolv.
+public class Mx {
+    public static List<string> Lookup(string domain) {
+        let out: List<string> = new List<string>()
+        @c {
+            unsigned char ans[8192];
+            int len = res_query((const char*) domain, ns_c_in, ns_t_mx, ans, sizeof(ans));
+            if (len >= 0) {
+                ns_msg h;
+                if (ns_initparse(ans, len, &h) >= 0) {
+                    int cnt = ns_msg_count(h, ns_s_an);
+                    int prefs[64]; char* hosts[64]; int m = 0;
+                    for (int i = 0; i < cnt && m < 64; i++) {
+                        ns_rr rr;
+                        if (ns_parserr(&h, ns_s_an, i, &rr)) continue;
+                        if (ns_rr_type(rr) != ns_t_mx) continue;
+                        const unsigned char* rd = ns_rr_rdata(rr);
+                        int pref = ns_get16(rd);
+                        char host[256];
+                        if (ns_name_uncompress(ns_msg_base(h), ns_msg_end(h),
+                                               rd + 2, host, sizeof(host)) < 0) continue;
+                        size_t hl = strlen(host);
+                        char* hc = (char*) GC_MALLOC(hl + 1);
+                        memcpy(hc, host, hl + 1);
+                        prefs[m] = pref; hosts[m] = hc; m++;
+                    }
+                    for (int a = 1; a < m; a++) {
+                        int pp = prefs[a]; char* hh = hosts[a]; int b = a - 1;
+                        while (b >= 0 && prefs[b] > pp) { prefs[b+1] = prefs[b]; hosts[b+1] = hosts[b]; b--; }
+                        prefs[b+1] = pp; hosts[b+1] = hh;
+                    }
+                    for (int a = 0; a < m; a++) AmalgameList_add(out, (void*) hosts[a]);
+                }
+            }
+        }
+        return out
+    }
 }
 
 // ═══════════════════════════════════════════════════════
@@ -59,6 +104,29 @@ public class Sender {
         return this
     }
     public Sender WithStartTls(bool on) { this.UseStartTls = on; return this }
+
+    // Direct delivery: look up the recipient domain's MX and deliver to
+    // the best one on :25 (trying each in preference order on failure),
+    // falling back to the domain's A record when there is no MX. STARTTLS
+    // is recommended for direct MX delivery — call WithStartTls(true).
+    // Requires outbound :25 to be open on this host.
+    public bool Deliver(string from, string to, string message) {
+        let at: int = String_IndexOf(to, "@")
+        if (at < 0) { this.LastErr = "recipient has no domain: " + to; return false }
+        let domain: string = String_Substring(to, at + 1, String_Length(to) - at - 1)
+        let mxs: List<string> = Mx.Lookup(domain)
+        let hosts: List<string> = new List<string>()
+        let mn: int = mxs.Count()
+        for i in 0..mn { hosts.Add(mxs.Get(i)) }
+        if (hosts.Count() == 0) { hosts.Add(domain) }   // implicit MX = A record
+        let hn: int = hosts.Count()
+        for i in 0..hn {
+            let host: string = hosts.Get(i)
+            if (this.Send(host, 25, from, to, message)) { return true }
+        }
+        if (String_Length(this.LastErr) == 0) { this.LastErr = "no reachable MX for " + domain }
+        return false
+    }
 
     // Deliver `message` (raw RFC 5322) to host:port. Returns true on a
     // 2xx final reply to end-of-DATA. On failure see LastErr.

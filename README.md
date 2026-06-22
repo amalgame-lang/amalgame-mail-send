@@ -32,17 +32,32 @@ enabled) → `MAIL FROM` → `RCPT TO` → `DATA` (dot-stuffed message) →
 `QUIT`, DKIM-signing the message first when a key is configured. Returns
 true on a 2xx final reply.
 
-Point it at a **smarthost** (a provider's submission server) or — once MX
-lookup lands — directly at a recipient's MX. Direct MX delivery on `:25`
-needs the IONOS IP's outbound `:25` to be open + PTR/SPF/DKIM/DMARC
-published (see the deliverability runbook in `amalgame-mail-dkim`); until
-then a smarthost is the pragmatic path.
+### Direct MX delivery (v0.2.0)
+
+`Sender.Deliver(from, to, message)` resolves the recipient domain's MX
+records and delivers to the best one on `:25` (trying each in preference
+order, falling back to the domain's A record when there is no MX):
+
+```amalgame
+let ok: bool = s3.Deliver("alice@amalgame.me", "bob@gmail.com", rawMessage)
+```
+
+MX lookup is also exposed directly — `Mx.Lookup("gmail.com")` returns the
+exchangers best-preference first, via the system resolver (`res_query`),
+so consumers **link `-lresolv`**.
+
+Point `Send` at a **smarthost** (a provider's submission server) or use
+`Deliver` for direct MX. Direct delivery on `:25` needs this host's
+outbound `:25` open + PTR/SPF/DKIM/DMARC published (see the deliverability
+runbook in `amalgame-mail-dkim`); when `:25` egress is blocked, a
+smarthost is the pragmatic path.
 
 ## Tests
 
 ```sh
 # siblings amalgame-mail-dkim, amalgame-crypto, amalgame-tls alongside
-bash tests/smoke_test.sh /path/to/amc
+bash tests/run_tests.sh  /path/to/amc     # MX lookup (3/3, needs network/DNS)
+bash tests/smoke_test.sh /path/to/amc     # send path vs a local SMTP sink
 ```
 
 The smoke test runs a minimal SMTP sink, builds + runs the `Sender`

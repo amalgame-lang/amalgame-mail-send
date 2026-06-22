@@ -14,7 +14,7 @@
 
 [package]
 name              = "amalgame-mail-send"
-version           = "0.1.0"
+version           = "0.2.0"
 license           = "Apache-2.0"
 description       = "Outbound SMTP delivery for the native Amalgame mail server: Sender.Send delivers a (optionally DKIM-signed) message to an SMTP host over plaintext + opportunistic STARTTLS. Targets MX :25 / submission :587 / smarthost."
 authors           = ["Bastien Mouget"]
@@ -27,7 +27,7 @@ amalgame-crypto    = ">=0.8.0"
 amalgame-tls       = ">=0.3.5"
 
 [stdlib]
-class     = "Sender"
+classes   = ["Sender", "Mx"]
 header    = "facade-stub.h"
 namespace = "Amalgame.Mail.Send"
 facade    = "facade.am"
