@@ -1,0 +1,232 @@
+namespace Amalgame.Mail.Send
+
+import Amalgame.Collections
+import Amalgame.String
+import Amalgame.Crypto
+import Amalgame.Tls
+import Amalgame.Mail.Dkim
+
+@c {
+    #include <string.h>
+    #include <sys/socket.h>
+    #include <unistd.h>
+}
+
+// ═══════════════════════════════════════════════════════
+//  send.am  —  outbound SMTP delivery (the send path)
+// ═══════════════════════════════════════════════════════
+//
+// Phase 6 of the native Amalgame mail server: the OUTBOUND half. Takes a
+// message, optionally DKIM-signs it (amalgame-mail-dkim), and delivers
+// it to a destination SMTP host (a smarthost/relay, or — once MX lookup
+// is added — a recipient's MX) over plaintext with opportunistic
+// STARTTLS.
+//
+// Complements `amalgame-net-smtp` (the v0.2.4 client, implicit-TLS :465
+// submission to a provider): this `Sender` speaks plaintext + STARTTLS,
+// which is what MX :25 and submission :587 expect, and folds in DKIM
+// signing for the unified family domain.
+//
+//   let s = new Sender()
+//   let s2 = s.WithStartTls(true)
+//   let s3 = s2.WithDkim(key, "family.neitsab.fr", "sel1")
+//   let ok = s3.Send("mx.example.com", 25, "alice@family.neitsab.fr",
+//                    "bob@example.com", rawMessage)
+//
+// Out of scope (v0.1.0): MX DNS lookup (caller passes host:port —
+// smarthost or known MX); implicit TLS (:465 — use amalgame-net-smtp for
+// that); a retry queue; pipelining; AUTH on submit (add when relaying via
+// an authenticated smarthost).
+
+public class Sender {
+    private HasDkim:     bool
+    private DkimKey:     JwsKey
+    private Domain:      string
+    private Selector:    string
+    private UseStartTls: bool
+    public  LastErr:     string
+
+    public Sender() {
+        this.HasDkim     = false
+        this.Domain      = ""
+        this.Selector    = ""
+        this.UseStartTls = false
+        this.LastErr     = ""
+    }
+
+    public Sender WithDkim(JwsKey key, string domain, string selector) {
+        this.HasDkim = true; this.DkimKey = key; this.Domain = domain; this.Selector = selector
+        return this
+    }
+    public Sender WithStartTls(bool on) { this.UseStartTls = on; return this }
+
+    // Deliver `message` (raw RFC 5322) to host:port. Returns true on a
+    // 2xx final reply to end-of-DATA. On failure see LastErr.
+    public bool Send(string host, int port, string from, string to, string message) {
+        var msg: string = message
+        if (this.HasDkim) { msg = Dkim.Sign(message, this.DkimKey, this.Domain, this.Selector) }
+
+        let client = TcpClient_Connect(host, port)
+        if (!TcpClient_IsConnected(client)) { this.LastErr = "connect failed"; return false }
+        var fd: int = -1
+        @c { fd = ((AmalgameTcpClient*) client)->_fd; }
+
+        // greeting
+        let greet: string = Sender.recvFd(fd, 4096)
+        if (!Sender.is2or3(greet)) { this.LastErr = "bad greeting: " + greet; return false }
+
+        // EHLO
+        Sender.sendFd(fd, "EHLO amalgame.local\r\n")
+        let ehlo: string = Sender.recvResp(fd)
+
+        // opportunistic STARTTLS
+        if (this.UseStartTls && String_Contains(String_ToUpper(ehlo), "STARTTLS")) {
+            Sender.sendFd(fd, "STARTTLS\r\n")
+            let st: string = Sender.recvFd(fd, 4096)
+            if (Sender.is2or3(st)) {
+                let cfg0: TlsConfig = TlsConfig.Default()
+                let cfg:  TlsConfig = TlsConfig.WithInsecureSkipVerify(cfg0, true)
+                let ctx:  TlsContext = TlsContext.Client(cfg)
+                let tls:  TlsStream = TlsStream.Wrap(fd, ctx, false)
+                let hs:   bool = TlsStream.Handshake(tls)
+                if (!hs) { this.LastErr = "tls handshake failed"; return false }
+                return this.dialogTls(tls, from, to, msg)
+            }
+        }
+        return this.dialogPlain(fd, from, to, msg)
+    }
+
+    // ── plaintext dialogue ────────────────────────────
+    private bool dialogPlain(int fd, string from, string to, string msg) {
+        Sender.sendFd(fd, "EHLO amalgame.local\r\n")
+        let e: string = Sender.recvResp(fd)
+        Sender.sendFd(fd, "MAIL FROM:<" + from + ">\r\n")
+        let m: string = Sender.recvResp(fd)
+        if (!Sender.is2or3(m)) { this.LastErr = "MAIL rejected: " + m; return false }
+        Sender.sendFd(fd, "RCPT TO:<" + to + ">\r\n")
+        let r: string = Sender.recvResp(fd)
+        if (!Sender.is2or3(r)) { this.LastErr = "RCPT rejected: " + r; return false }
+        Sender.sendFd(fd, "DATA\r\n")
+        let d: string = Sender.recvResp(fd)
+        if (!Sender.is3(d)) { this.LastErr = "DATA rejected: " + d; return false }
+        Sender.sendFd(fd, Sender.dotStuff(msg) + "\r\n.\r\n")
+        let f: string = Sender.recvResp(fd)
+        if (!Sender.is2or3(f)) { this.LastErr = "message rejected: " + f; return false }
+        Sender.sendFd(fd, "QUIT\r\n")
+        let q: string = Sender.recvFd(fd, 4096)
+        return true
+    }
+
+    // ── TLS dialogue (after STARTTLS) ─────────────────
+    private bool dialogTls(tls: TlsStream, string from, string to, string msg) {
+        Sender.sendTls(tls, "EHLO amalgame.local\r\n")
+        let e: string = Sender.recvRespTls(tls)
+        Sender.sendTls(tls, "MAIL FROM:<" + from + ">\r\n")
+        let m: string = Sender.recvRespTls(tls)
+        if (!Sender.is2or3(m)) { this.LastErr = "MAIL rejected: " + m; return false }
+        Sender.sendTls(tls, "RCPT TO:<" + to + ">\r\n")
+        let r: string = Sender.recvRespTls(tls)
+        if (!Sender.is2or3(r)) { this.LastErr = "RCPT rejected: " + r; return false }
+        Sender.sendTls(tls, "DATA\r\n")
+        let d: string = Sender.recvRespTls(tls)
+        if (!Sender.is3(d)) { this.LastErr = "DATA rejected: " + d; return false }
+        Sender.sendTls(tls, Sender.dotStuff(msg) + "\r\n.\r\n")
+        let f: string = Sender.recvRespTls(tls)
+        if (!Sender.is2or3(f)) { this.LastErr = "message rejected: " + f; return false }
+        Sender.sendTls(tls, "QUIT\r\n")
+        let q: string = Sender.recvRespTls(tls)
+        TlsStream.Close(tls)
+        return true
+    }
+
+    // ── reply parsing ─────────────────────────────────
+    // A reply is complete when a line's 4th char is a space ("250 ..."),
+    // as opposed to a continuation ("250-...").
+    private static bool replyComplete(string buf) {
+        let lines: List<string> = Sender.splitLines(buf)
+        let n: int = lines.Count()
+        if (n == 0) { return false }
+        // last non-empty line
+        var i: int = n - 1
+        while (i >= 0 && String_Length(lines.Get(i)) == 0) { i = i - 1 }
+        if (i < 0) { return false }
+        let last: string = lines.Get(i)
+        if (String_Length(last) < 4) { return false }
+        return String_CharAt1(last, 3) == " "
+    }
+    private static string recvResp(int fd) {
+        var buf: string = ""
+        var tries: int = 0
+        while (!Sender.replyComplete(buf) && tries < 64) {
+            let c: string = Sender.recvFd(fd, 4096)
+            if (String_Length(c) == 0) { break }
+            buf = buf + c
+            tries = tries + 1
+        }
+        return buf
+    }
+    private static string recvRespTls(tls: TlsStream) {
+        var buf: string = ""
+        var tries: int = 0
+        while (!Sender.replyComplete(buf) && tries < 64) {
+            let c: string = Sender.recvTls(tls, 4096)
+            if (String_Length(c) == 0) { break }
+            buf = buf + c
+            tries = tries + 1
+        }
+        return buf
+    }
+    private static bool is2or3(string resp) {
+        let c: string = Sender.firstChar(resp)
+        return c == "2" || c == "3"
+    }
+    private static bool is3(string resp) { return Sender.firstChar(resp) == "3" }
+    private static string firstChar(string s) {
+        if (String_Length(s) == 0) { return "" }
+        return String_CharAt1(s, 0)
+    }
+    private static List<string> splitLines(string s) {
+        let norm: string = String_Replace(s, "\r\n", "\n")
+        return String_Split(norm, "\n")
+    }
+
+    // ── dot-stuffing ──────────────────────────────────
+    private static string dotStuff(string msg) {
+        var m: string = String_Replace(msg, "\r\n.", "\r\n..")
+        if (String_Length(m) > 0 && String_CharAt1(m, 0) == ".") { m = "." + m }
+        return m
+    }
+
+    // ── transport helpers ─────────────────────────────
+    private static string recvFd(int fd, int max) {
+        var r: string = ""
+        @c {
+            char* b = (char*) GC_MALLOC((size_t) max + 1);
+            long n = (long) recv((int) fd, b, (size_t) max, 0);
+            if (n > 0) { b[n] = 0; r = (code_string) b; }
+        }
+        return r
+    }
+    private static bool sendFd(int fd, string data) {
+        var ok: bool = false
+        @c { long n = (long) send((int) fd, data, strlen(data), 0); ok = (n >= 0); }
+        return ok
+    }
+    private static string recvTls(tls: TlsStream, max: int) {
+        var r: string = ""
+        @c {
+            char* b = (char*) GC_MALLOC((size_t) max + 1);
+            i64 n = Amalgame_Tls_TlsStream_ReadBytes((AmalgameTlsStream*) tls, b, (i64) max);
+            if (n > 0) { b[n] = 0; r = (code_string) b; }
+        }
+        return r
+    }
+    private static bool sendTls(tls: TlsStream, data: string) {
+        var ok: bool = false
+        @c {
+            i64 n = Amalgame_Tls_TlsStream_WriteBytes((AmalgameTlsStream*) tls, data, (i64) strlen(data));
+            ok = (n >= 0);
+        }
+        return ok
+    }
+}

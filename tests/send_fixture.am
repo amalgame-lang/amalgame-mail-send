@@ -1,0 +1,29 @@
+// Smoke fixture: DKIM-sign a message and deliver it to a local SMTP
+// sink on 127.0.0.1:2530 via Sender (plaintext). Driven by
+// tests/smoke_test.sh, which runs a minimal Python SMTP receiver and
+// asserts the delivered message carries a DKIM-Signature + the body.
+
+namespace Smoke
+
+import Amalgame.Collections
+import Amalgame.Crypto
+import Amalgame.Tls
+import Amalgame.Mail.Dkim
+import Amalgame.Mail.Send
+
+public class Program {
+    public static void Main(string[] args) {
+        let key: JwsKey = JwsKey.GenerateRs256()
+        let msg: string = "From: alice@family.neitsab.fr\r\n"
+            + "To: bob@example.com\r\n"
+            + "Subject: Send smoke\r\n"
+            + "Date: Mon, 01 Jan 2026 12:00:00 +0000\r\n"
+            + "\r\n"
+            + "hello send smoke body\r\n"
+        let s0: Sender = new Sender()
+        let s1: Sender = s0.WithDkim(key, "family.neitsab.fr", "sel1")
+        let ok: bool = s1.Send("127.0.0.1", 2530, "alice@family.neitsab.fr", "bob@example.com", msg)
+        if (ok) { Console.WriteLine("SENT-OK") }
+        else { Console.WriteLine("SENT-ERR " + s1.LastErr) }
+    }
+}
