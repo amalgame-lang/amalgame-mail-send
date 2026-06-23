@@ -69,6 +69,28 @@ outbound `:25` open + PTR/SPF/DKIM/DMARC published (see the deliverability
 runbook in `amalgame-mail-dkim`); when `:25` egress is blocked, a
 smarthost is the pragmatic path.
 
+### Direct-first, relay-on-failure (v0.4.0)
+
+`Sender.DeliverOrRelay(from, to, msg)` tries **direct MX** first and falls
+back to the configured relay only on a **hard failure** (5xx / unreachable
+MX):
+
+```amalgame
+let s: Sender = new Sender()
+    .WithStartTls(true)
+    .WithDkim(key, "amalgame.me", "sel1")
+    .WithHelo("mail.amalgame.me")
+    .WithRelay("ssl0.ovh.net", 587, "relay@domain", "pass")   // fallback only
+let ok: bool = s.DeliverOrRelay("you@amalgame.me", to, msg)   // s.LastVia = "direct"|"relay"
+```
+
+⚠️ This only reacts to *rejections*. A message **accepted then
+spam-foldered** returns success (the receiver said 250 — no failure
+signal), so the relay is NOT used. While your domain's reputation is
+young, **relay everything** (`Send(relay, …)`) lands in the inbox more
+reliably; switch to `DeliverOrRelay` once reputation is established (to
+spare the relay's quota).
+
 ## Tests
 
 ```sh

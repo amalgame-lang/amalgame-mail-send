@@ -14,7 +14,7 @@
 
 [package]
 name              = "amalgame-mail-send"
-version           = "0.3.0"
+version           = "0.4.0"
 license           = "Apache-2.0"
 description       = "Outbound SMTP delivery for the native Amalgame mail server: Sender.Send delivers a (optionally DKIM-signed) message to an SMTP host over plaintext + opportunistic STARTTLS. Targets MX :25 / submission :587 / smarthost."
 authors           = ["Bastien Mouget"]
