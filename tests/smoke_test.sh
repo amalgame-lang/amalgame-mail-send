@@ -89,7 +89,15 @@ while True:
     while b"\r\n" in buf:
         line, buf = buf.split(b"\r\n", 1)
         u = line.upper()
-        if u.startswith(b"EHLO") or u.startswith(b"HELO"): send("250 sink\r\n")
+        if u.startswith(b"EHLO") or u.startswith(b"HELO"): send("250-sink\r\n250 AUTH PLAIN\r\n")
+        elif u.startswith(b"AUTH PLAIN"):
+            import base64
+            tok = line.split(b" ", 2)[2] if len(line.split(b" ",2))>2 else b""
+            try:
+                dec = base64.b64decode(tok)
+                open(cap+".creds","wb").write(dec)   # \0user\0pass
+            except Exception: pass
+            send("235 2.7.0 ok\r\n")
         elif u.startswith(b"MAIL"): send("250 OK\r\n")
         elif u.startswith(b"RCPT"): send("250 OK\r\n")
         elif u.startswith(b"DATA"): send("354 go\r\n"); data_mode=True
@@ -115,6 +123,11 @@ if [ -f "$CAP" ] && grep -q "DKIM-Signature:" "$CAP" && grep -q "hello send smok
     PASS=$((PASS+1)); echo -e "  ${GREEN}DKIM-signed message delivered${NC}"
 else
     FAIL=$((FAIL+1)); echo -e "  ${RED}captured message missing/incomplete${NC}"; [ -f "$CAP" ] && head -5 "$CAP" | sed 's/^/    /'
+fi
+if [ -f "$CAP.creds" ] && grep -qa "relayuser" "$CAP.creds" && grep -qa "relaypass" "$CAP.creds"; then
+    PASS=$((PASS+1)); echo -e "  ${GREEN}SMTP AUTH PLAIN accepted (creds decoded by relay)${NC}"
+else
+    FAIL=$((FAIL+1)); echo -e "  ${RED}AUTH PLAIN not received/incorrect${NC}"
 fi
 echo "────────────────────────────────────────────"
 echo -e "  ${GREEN}PASS: $PASS${NC} | ${RED}FAIL: $FAIL${NC}"

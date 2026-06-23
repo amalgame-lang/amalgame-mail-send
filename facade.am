@@ -90,6 +90,9 @@ public class Sender {
     private Selector:    string
     private UseStartTls: bool
     private Helo:        string
+    private HasAuth:     bool
+    private AuthUser:    string
+    private AuthPass:    string
     public  LastErr:     string
 
     public Sender() {
@@ -98,6 +101,9 @@ public class Sender {
         this.Selector    = ""
         this.UseStartTls = false
         this.Helo        = "localhost"
+        this.HasAuth     = false
+        this.AuthUser    = ""
+        this.AuthPass    = ""
         this.LastErr     = ""
     }
 
@@ -106,6 +112,13 @@ public class Sender {
         return this
     }
     public Sender WithStartTls(bool on) { this.UseStartTls = on; return this }
+    // SMTP AUTH (PLAIN) credentials for relaying through a smarthost /
+    // submission server. Sent after STARTTLS (or in the clear on a plain
+    // connection — only use over TLS). Enables escaping a poor-reputation
+    // sending IP by relaying through a reputable host.
+    public Sender WithAuth(string user, string pass) {
+        this.HasAuth = true; this.AuthUser = user; this.AuthPass = pass; return this
+    }
     // The EHLO/HELO hostname this server announces. MUST be a real FQDN
     // that matches the sending IP's PTR (e.g. "mail.amalgame.me") —
     // receivers score a non-matching / non-FQDN HELO as spam.
@@ -174,6 +187,11 @@ public class Sender {
     private bool dialogPlain(int fd, string from, string to, string msg) {
         Sender.sendFd(fd, "EHLO " + this.Helo + "\r\n")
         let e: string = Sender.recvResp(fd)
+        if (this.HasAuth) {
+            Sender.sendFd(fd, this.authLine())
+            let av: string = Sender.recvResp(fd)
+            if (!Sender.is2or3(av)) { this.LastErr = "AUTH rejected: " + av; return false }
+        }
         Sender.sendFd(fd, "MAIL FROM:<" + from + ">\r\n")
         let m: string = Sender.recvResp(fd)
         if (!Sender.is2or3(m)) { this.LastErr = "MAIL rejected: " + m; return false }
@@ -195,6 +213,11 @@ public class Sender {
     private bool dialogTls(tls: TlsStream, string from, string to, string msg) {
         Sender.sendTls(tls, "EHLO " + this.Helo + "\r\n")
         let e: string = Sender.recvRespTls(tls)
+        if (this.HasAuth) {
+            Sender.sendTls(tls, this.authLine())
+            let av: string = Sender.recvRespTls(tls)
+            if (!Sender.is2or3(av)) { this.LastErr = "AUTH rejected: " + av; return false }
+        }
         Sender.sendTls(tls, "MAIL FROM:<" + from + ">\r\n")
         let m: string = Sender.recvRespTls(tls)
         if (!Sender.is2or3(m)) { this.LastErr = "MAIL rejected: " + m; return false }
@@ -269,6 +292,54 @@ public class Sender {
         var m: string = String_Replace(msg, "\r\n.", "\r\n..")
         if (String_Length(m) > 0 && String_CharAt1(m, 0) == ".") { m = "." + m }
         return m
+    }
+
+    // ── SMTP AUTH PLAIN ───────────────────────────────
+    // "AUTH PLAIN " + base64(\0 user \0 pass) + CRLF.
+    private string authLine() {
+        let bytes: List<int> = new List<int>()
+        bytes.Add(0)
+        let ub: List<int> = Bytes.FromString(this.AuthUser)
+        let un: int = ub.Count()
+        for i in 0..un { bytes.Add(ub.Get(i)) }
+        bytes.Add(0)
+        let pb: List<int> = Bytes.FromString(this.AuthPass)
+        let pn: int = pb.Count()
+        for i in 0..pn { bytes.Add(pb.Get(i)) }
+        return "AUTH PLAIN " + Sender.b64encode(bytes) + "\r\n"
+    }
+    // Standard Base64 (RFC 4648 §4, padded).
+    private static string b64encode(List<int> bytes) {
+        let alpha: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        let n: int = bytes.Count()
+        var out: string = ""
+        var i: int = 0
+        while (i + 3 <= n) {
+            let b0: int = bytes.Get(i) & 255
+            let b1: int = bytes.Get(i + 1) & 255
+            let b2: int = bytes.Get(i + 2) & 255
+            out = out + String_CharAt1(alpha, b0 / 4)
+            out = out + String_CharAt1(alpha, ((b0 & 3) * 16) + (b1 / 16))
+            out = out + String_CharAt1(alpha, ((b1 & 15) * 4) + (b2 / 64))
+            out = out + String_CharAt1(alpha, b2 & 63)
+            i = i + 3
+        }
+        let rem: int = n - i
+        if (rem == 1) {
+            let b0: int = bytes.Get(i) & 255
+            out = out + String_CharAt1(alpha, b0 / 4)
+            out = out + String_CharAt1(alpha, (b0 & 3) * 16)
+            out = out + "=="
+        }
+        if (rem == 2) {
+            let b0: int = bytes.Get(i) & 255
+            let b1: int = bytes.Get(i + 1) & 255
+            out = out + String_CharAt1(alpha, b0 / 4)
+            out = out + String_CharAt1(alpha, ((b0 & 3) * 16) + (b1 / 16))
+            out = out + String_CharAt1(alpha, (b1 & 15) * 4)
+            out = out + "="
+        }
+        return out
     }
 
     // ── transport helpers ─────────────────────────────

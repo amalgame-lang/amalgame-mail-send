@@ -22,7 +22,8 @@ public class Program {
             + "hello send smoke body\r\n"
         let s0: Sender = new Sender()
         let s1: Sender = s0.WithDkim(key, "family.neitsab.fr", "sel1")
-        let ok: bool = s1.Send("127.0.0.1", 2530, "alice@family.neitsab.fr", "bob@example.com", msg)
+        let s1b: Sender = s1.WithAuth("relayuser", "relaypass")   // SMTP AUTH to the (sink) relay
+        let ok: bool = s1b.Send("127.0.0.1", 2530, "alice@family.neitsab.fr", "bob@example.com", msg)
         if (ok) { Console.WriteLine("SENT-OK") }
         else { Console.WriteLine("SENT-ERR " + s1.LastErr) }
     }

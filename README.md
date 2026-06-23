@@ -27,6 +27,23 @@ let ok: bool = s3.Send("smarthost.example", 587,
 if (!ok) { Console.WriteLine(s3.LastErr) }
 ```
 
+### Relaying through a smarthost (v0.3.0)
+
+When your sending IP has poor reputation (e.g. collateral DNSBL listing of
+a hosting provider's range), relay through a reputable submission server:
+
+```amalgame
+let s: Sender = new Sender()
+    .WithStartTls(true)
+    .WithAuth("relay-user", "relay-pass")        // SMTP AUTH PLAIN (over TLS)
+    .WithDkim(key, "amalgame.me", "sel1")
+    .WithHelo("mail.amalgame.me")
+let ok: bool = s.Send("smtp.relay.example", 587, "you@amalgame.me", "bob@yahoo.com", msg)
+```
+
+The mail is DKIM-signed by you and leaves from the relay's (clean) IP. Add
+the relay to your SPF (`v=spf1 mx include:<relay-spf> -all`).
+
 `Send` connects, runs `EHLO` → (opportunistic `STARTTLS` if offered and
 enabled) → `MAIL FROM` → `RCPT TO` → `DATA` (dot-stuffed message) →
 `QUIT`, DKIM-signing the message first when a key is configured. Returns
