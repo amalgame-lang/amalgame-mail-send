@@ -1,0 +1,42 @@
+// Real send: DKIM-sign + direct-MX delivery to live recipients, from the
+// IONOS server. Key path = arg0; recipients hardcoded. Prints per-address.
+namespace Smoke
+import Amalgame.Collections
+import Amalgame.Crypto
+import Amalgame.Tls
+import Amalgame.Mail.Dkim
+import Amalgame.Mail.Send
+
+public class Program {
+    public static void Main(string[] args) {
+        let keyPath: string = "/home/neitsab/mailtest/dkim.key"
+        let pem: string = File.ReadAll(keyPath)
+        if (String_Length(pem) == 0) { Console.WriteLine("KEY-MISSING " + keyPath); return }
+        let key: JwsKey = JwsKey.FromPemPrivate(pem)
+        let from: string = "test@amalgame.me"
+        let rcpts: List<string> = new List<string>()
+        rcpts.Add("bmtbf@hotmail.fr")
+        rcpts.Add("bastien.mouget@gmail.com")
+        let n: int = rcpts.Count()
+        for i in 0..n {
+            let to: string = rcpts.Get(i)
+            let msg: string = "From: Amalgame Mail <test@amalgame.me>\r\n"
+                + "To: " + to + "\r\n"
+                + "Subject: Test serveur mail natif Amalgame\r\n"
+                + "Date: Mon, 23 Jun 2026 12:00:00 +0000\r\n"
+                + "Message-ID: <natif-" + String_FromInt(i) + "@amalgame.me>\r\n"
+                + "MIME-Version: 1.0\r\n"
+                + "Content-Type: text/plain; charset=UTF-8\r\n"
+                + "\r\n"
+                + "Bonjour,\r\n\r\nCeci est un test du serveur mail natif Amalgame "
+                + "(SMTP sortant + signature DKIM + livraison directe au MX).\r\n"
+                + "Si tu lis ceci, la chaine d'envoi fonctionne.\r\n"
+            let s0: Sender = new Sender()
+            let s1: Sender = s0.WithDkim(key, "amalgame.me", "sel1")
+            let s2: Sender = s1.WithStartTls(true)
+            let ok: bool = s2.Deliver(from, to, msg)
+            if (ok) { Console.WriteLine("SENT-OK " + to) }
+            else { Console.WriteLine("SENT-ERR " + to + " :: " + s2.LastErr) }
+        }
+    }
+}

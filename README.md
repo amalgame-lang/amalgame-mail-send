@@ -19,7 +19,7 @@ import Amalgame.Crypto
 
 let key: JwsKey = JwsKey.FromPemPrivate(pem)        // the DKIM key
 let s: Sender = new Sender()
-let s2: Sender = s.WithStartTls(true)
+let s2: Sender = s.WithStartTls(true).WithHelo("mail.amalgame.me")  // FQDN = PTR (anti-spam)
 let s3: Sender = s2.WithDkim(key, "family.neitsab.fr", "sel1")
 
 let ok: bool = s3.Send("smarthost.example", 587,

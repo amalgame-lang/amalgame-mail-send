@@ -89,6 +89,7 @@ public class Sender {
     private Domain:      string
     private Selector:    string
     private UseStartTls: bool
+    private Helo:        string
     public  LastErr:     string
 
     public Sender() {
@@ -96,6 +97,7 @@ public class Sender {
         this.Domain      = ""
         this.Selector    = ""
         this.UseStartTls = false
+        this.Helo        = "localhost"
         this.LastErr     = ""
     }
 
@@ -104,6 +106,10 @@ public class Sender {
         return this
     }
     public Sender WithStartTls(bool on) { this.UseStartTls = on; return this }
+    // The EHLO/HELO hostname this server announces. MUST be a real FQDN
+    // that matches the sending IP's PTR (e.g. "mail.amalgame.me") —
+    // receivers score a non-matching / non-FQDN HELO as spam.
+    public Sender WithHelo(string hostname) { this.Helo = hostname; return this }
 
     // Direct delivery: look up the recipient domain's MX and deliver to
     // the best one on :25 (trying each in preference order on failure),
@@ -144,7 +150,7 @@ public class Sender {
         if (!Sender.is2or3(greet)) { this.LastErr = "bad greeting: " + greet; return false }
 
         // EHLO
-        Sender.sendFd(fd, "EHLO amalgame.local\r\n")
+        Sender.sendFd(fd, "EHLO " + this.Helo + "\r\n")
         let ehlo: string = Sender.recvResp(fd)
 
         // opportunistic STARTTLS
@@ -166,7 +172,7 @@ public class Sender {
 
     // ── plaintext dialogue ────────────────────────────
     private bool dialogPlain(int fd, string from, string to, string msg) {
-        Sender.sendFd(fd, "EHLO amalgame.local\r\n")
+        Sender.sendFd(fd, "EHLO " + this.Helo + "\r\n")
         let e: string = Sender.recvResp(fd)
         Sender.sendFd(fd, "MAIL FROM:<" + from + ">\r\n")
         let m: string = Sender.recvResp(fd)
@@ -187,7 +193,7 @@ public class Sender {
 
     // ── TLS dialogue (after STARTTLS) ─────────────────
     private bool dialogTls(tls: TlsStream, string from, string to, string msg) {
-        Sender.sendTls(tls, "EHLO amalgame.local\r\n")
+        Sender.sendTls(tls, "EHLO " + this.Helo + "\r\n")
         let e: string = Sender.recvRespTls(tls)
         Sender.sendTls(tls, "MAIL FROM:<" + from + ">\r\n")
         let m: string = Sender.recvRespTls(tls)
